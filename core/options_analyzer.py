@@ -7,6 +7,8 @@ from typing import List, Tuple, Dict
 from datetime import datetime
 from indicators.onBalanceVolume import OnBalanceVolume
 
+from core.contract_manager import OptionsContractManager
+
 # from indicators import onBalanceVolume
 
 class OptionsAnalyzer:
@@ -30,67 +32,7 @@ class OptionsAnalyzer:
     def connect(self, host='127.0.0.1', port=7496, clientId=10):
         """Connect to TWS/IBGateway"""
         self.ib.connect(host, port, clientId)
-        
-    def get_nth_expiry(self, chains, expiry_distance: int = 0) -> str:
-        """Get the nearest expiration date from option chains"""
-        expirations = sorted(set(contract_exp
-                               for contract_exp in chains.expirations))
-        return expirations[expiry_distance] if expirations else None
-        
-    def get_strike_bounds(self, 
-                         stock: Contract, 
-                         chains: List[Contract]) -> Tuple[float, List[float]]:
-        """Get current stock price and sorted list of strikes"""
-        # Get last close price
-        [ticker] = self.ib.reqTickers(stock)
-        last_price = ticker.last if ticker.last > 0 else ticker.close
-        print(f"Underlying last available price: {last_price}")
-        
-        # Get sorted unique strikes
-        strikes = sorted(set(contract.strike for contract in chains))
-        
-        return last_price, strikes
-        
-    def get_otm_options(self, 
-                       symbol: str, 
-                       num_strikes: int = 5, expiry_distance: int=0) -> Dict[str, List[Contract]]:
-        """Get num_strikes OTM puts and calls for nearest expiry"""
-        stock = Stock(symbol, 'SMART', 'USD')
-        self.ib.qualifyContracts(stock)
-
-        chains = self.ib.reqSecDefOptParams(stock.symbol, '', stock.secType, stock.conId)
-        if not chains: 
-            raise ValueError(f'No option chains found for {symbol}')
-
-        chain = next(c for c in chains)
-        filtered_chain_strikes = [strike for strike in chain.strikes if strike % 1 == 0]
-        
-        # Get all contracts for this stock
-        contracts = [Option(symbol, 
-                          self.get_nth_expiry(chain, expiry_distance), 
-                          strike, 
-                          right,
-                          'SMART')
-                    for strike in filtered_chain_strikes
-                    for right in ('C', 'P')]
-                    
-        last_price, strikes = self.get_strike_bounds(stock, contracts)
-        
-        # Find ATM strike index
-        atm_idx = min(range(len(strikes)), 
-                     key=lambda i: abs(strikes[i] - last_price))
-        
-        # Get OTM options
-        otm_calls = [c for c in contracts 
-                    if c.right == 'C' 
-                    and c.strike in strikes[atm_idx:atm_idx+num_strikes]]
-        
-        otm_puts = [c for c in contracts 
-                   if c.right == 'P' 
-                   and c.strike in strikes[atm_idx-num_strikes+1:atm_idx+1]]
-        
-        return {'calls': otm_calls, 'puts': otm_puts}
-        
+                
     def get_historical_data(self, 
                           contracts: List[Contract], 
                           duration: str = '1 D',
@@ -179,7 +121,11 @@ class OptionsAnalyzer:
                 """Update the plot for real-time animation."""
                 print('Updating plot...')
                 snickers = []
-                all_contracts = update_otm_options()
+
+                contract_manager = OptionsContractManager(self.ib)
+                otm_cons = contract_manager.get_otm_options(symbol, num_otm_strikes, num_days_to_expiry)
+                all_contracts = otm_cons['calls'] + otm_cons['puts']
+                
                 for contract in all_contracts:
                     print(f"Requesting market data for strike {contract.strike}{contract.right}")
                     snickers.append(self.ib.reqMktData(contract))
@@ -262,16 +208,6 @@ class OptionsAnalyzer:
                     data = self.obv.calculate(data, ma_type='SMA', ma_length=45, use_bb=True, bb_mult=1.0)
                     self.obv_data.append((ticker, data))
             
-            def update_otm_options():
-                try:
-                    options = self.get_otm_options(symbol, num_strikes=num_otm_strikes, expiry_distance=num_days_to_expiry)
-                    all_contracts = options['calls'] + options['puts']
-                except Exception as e:
-                    print(f"Error retrieving options: {e}")
-                    return
-
-                return all_contracts 
-
             ani = FuncAnimation(self.fig, update_plot , interval=60000, cache_frame_data=False)  # Update every minute
             plt.show(block=True) 
 
