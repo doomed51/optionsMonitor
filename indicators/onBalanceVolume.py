@@ -1,5 +1,6 @@
 import pandas as pd
 import numpy as np
+from typing import List
 
 class OnBalanceVolume:
     def __init__(self):
@@ -143,6 +144,70 @@ class OnBalanceVolume:
                 )
                 
         return df
+
+    def calculate_obv_across_contracts(self, contracts_hist_data: dict = {}, ma_type: str = "None", ma_length: int = 14, 
+                 use_bb: bool = False, bb_mult: float = 2.0) -> pd.DataFrame:
+        """
+        Calculate OBV and selected moving average/bands
+        
+        Parameters:
+        -----------
+        contracts_hist_data: Dict
+            Dictionary with contract and its historical data
+        ma_type: str
+            Type of moving average to calculate
+        ma_length: int
+            Moving average period
+        use_bb: bool
+            Whether to calculate Bollinger Bands
+        bb_mult: float
+            Bollinger Bands standard deviation multiplier
+            
+        Returns:
+        --------
+        pd.DataFrame
+            DataFrame with call OBV
+        pd.DataFrame
+            DataFrame with put OBV
+        """
+        # Validate inputs
+        # required_columns = ['close', 'volume']
+        # if not all(col in df.columns for col in required_columns):
+        #     raise ValueError(f"DataFrame must contain columns: {required_columns}")
+        
+        if use_bb and ma_type == "None":
+            raise ValueError("Moving average type must be specified to calculate Bollinger Bands")
+        call_obv = pd.DataFrame()
+        put_obv = pd.DataFrame()
+        # describe contracts_hist_data
+
+        # Calculate OBV for each option contract
+        for idx in contracts_hist_data:
+            
+            # print(contracts_hist_data[con])
+            df = self.calculate(contracts_hist_data[idx]['df'])
+            if contracts_hist_data[idx]['contract'].right == 'C':
+                call_obv = pd.concat([call_obv, df[['date', 'obv']]])
+            else:
+                put_obv = pd.concat([put_obv, df[['date', 'obv']]])
+        
+        # aggregate call and put obv
+        call_obv = call_obv.groupby('date').sum().reset_index()
+        put_obv = put_obv.groupby('date').sum().reset_index()
+        
+
+        # Calculate Bollinger Bands if requested
+        if ma_type != "None":
+            call_obv['obv_ma'] = self.calculate_ma(call_obv['obv'], ma_length, ma_type)
+            put_obv['obv_ma'] = self.calculate_ma(put_obv['obv'], ma_length, ma_type)    
+            if use_bb:
+                call_obv['obv_bb_upper'], call_obv['obv_bb_lower'] = self.calculate_bollinger_bands(
+                    call_obv['obv'], call_obv['obv_ma'], ma_length, bb_mult
+                )
+                put_obv['obv_bb_upper'], put_obv['obv_bb_lower'] = self.calculate_bollinger_bands(
+                    put_obv['obv'], put_obv['obv_ma'], ma_length, bb_mult
+                )
+        return call_obv, put_obv
 
 # Example usage:
 if __name__ == "__main__":

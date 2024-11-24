@@ -8,6 +8,7 @@ from datetime import datetime
 from indicators.onBalanceVolume import OnBalanceVolume
 
 from core.contract_manager import OptionsContractManager
+from core.options_data_retriever import OptionsDataRetriever
 
 # from indicators import onBalanceVolume
 
@@ -90,73 +91,46 @@ class OptionsAnalyzer:
     def monitor_realtime(self, symbol: str, num_otm_strikes: int = 5, num_days_to_expiry: int = 1, num_periods_to_plot: int = 360):
             """Monitor options in realtime with live plotting"""
 
-            def update_obv_calculations(ma_length, bb_length, bb_mult, ma_type='SMA'):
-                # call_obv = pd.DataFrame(columns=['date', 'obv'])
-                # put_obv = pd.DataFrame(columns=['date', 'obv'])
-                call_obv = pd.DataFrame()
-                put_obv = pd.DataFrame()
-                for ticker, data in self.obv_data:
-                    if ticker.contract.right == 'C':
-                        # call_obv = call_obv.append(data[['date', 'obv']])
-                        call_obv = pd.concat([call_obv, data[['date', 'obv']]])
-                    else:
-                        put_obv = pd.concat([put_obv, data[['date', 'obv']]])
-                
-                call_obv = call_obv.groupby('date').agg({'obv': 'sum'}).reset_index()
-                # calcculate bollinger bands
-                call_obv['obv_ma'] = self.obv.calculate_ma(call_obv['obv'], ma_type=ma_type, length=ma_length)
-                call_obv['obv_upper_band'], call_obv['obv_lower_band']= self.obv.calculate_bollinger_bands(call_obv['obv'], call_obv['obv_ma'], length=bb_length, mult=0.5)
-                call_obv['obv_upper_band2'], call_obv['obv_lower_band2']= self.obv.calculate_bollinger_bands(call_obv['obv'], call_obv['obv_ma'], length=bb_length, mult=2.0)
-
-
-                put_obv = put_obv.groupby('date').agg({'obv': 'sum'}).reset_index()
-                # calcculate bollinger bands
-                put_obv['obv_ma'] = self.obv.calculate_ma(put_obv['obv'], ma_type=ma_type, length=ma_length)
-                put_obv['obv_upper_band'], put_obv['obv_lower_band']= self.obv.calculate_bollinger_bands(put_obv['obv'], put_obv['obv_ma'], length=bb_length, mult=bb_mult)
-                put_obv['obv_upper_band2'], put_obv['obv_lower_band2']= self.obv.calculate_bollinger_bands(put_obv['obv'], put_obv['obv_ma'], length=bb_length, mult=2.0)
-
-                return call_obv, put_obv
-
             def update_plot(frame):
                 """Update the plot for real-time animation."""
                 print('Updating plot...')
-                snickers = []
 
                 contract_manager = OptionsContractManager(self.ib)
+                data_retriever = OptionsDataRetriever(self.ib)
+
+                # get otm contracts 
                 otm_cons = contract_manager.get_otm_options(symbol, num_otm_strikes, num_days_to_expiry)
                 all_contracts = otm_cons['calls'] + otm_cons['puts']
-                
-                for contract in all_contracts:
-                    print(f"Requesting market data for strike {contract.strike}{contract.right}")
-                    snickers.append(self.ib.reqMktData(contract))
 
-                onPendingTickers(snickers) # refresh market data 
-                call_obv, put_obv = update_obv_calculations(ma_length=20, bb_length=20, bb_mult=0.5, ma_type='SMA') 
+                # get history for otm contracts 
+                contracts_and_hist_data = data_retriever.get_historical_data(all_contracts, duration='1 D')
+
+                # Aggregate obv for calls and puts 
+                call_obv, put_obv = self.obv.calculate_obv_across_contracts(contracts_and_hist_data, ma_type='SMA', ma_length=20, use_bb=True, bb_mult=0.5)
+
                 ## add ratio of callobv to putobv
                 call_obv['obv_call-put-ratio'] = call_obv['obv'] - put_obv['obv']
                 call_obv['obv_cp_ratio_ma'] = self.obv.calculate_ma(call_obv['obv_call-put-ratio'], ma_type='EMA', length=40)
                 call_obv['obv_cp_ratio_upper'], call_obv['obv_cp_ratio_lower']= self.obv.calculate_bollinger_bands(call_obv['obv_call-put-ratio'], call_obv['obv_cp_ratio_ma'], length=40, mult=0.5)
 
-                
-                # split date and time 
                 # convert date column to string for better plots 
                 call_obv['date'] = call_obv['date'].dt.strftime('%Y-%m-%d %H:%M:%S')
                 put_obv['date'] = put_obv['date'].dt.strftime('%Y-%m-%d %H:%M:%S')
-                     
 
+                # plot stats                      
                 self.ax[0].clear()
                     
                 self.ax[0].plot(call_obv['date'].tail(num_periods_to_plot), call_obv['obv'].tail(num_periods_to_plot), label='Call OBV', color='green')
                 self.ax[0].plot(call_obv['date'].tail(num_periods_to_plot), call_obv['obv_ma'].tail(num_periods_to_plot), label='Call OBV MA')
-                self.ax[0].plot(call_obv['date'].tail(num_periods_to_plot), call_obv['obv_upper_band'].tail(num_periods_to_plot), label='Call OBV Upper Band')
-                self.ax[0].plot(call_obv['date'].tail(num_periods_to_plot), call_obv['obv_lower_band'].tail(num_periods_to_plot), label='Call OBV Lower Band')
+                self.ax[0].plot(call_obv['date'].tail(num_periods_to_plot), call_obv['obv_bb_upper'].tail(num_periods_to_plot), label='Call OBV Upper Band')
+                self.ax[0].plot(call_obv['date'].tail(num_periods_to_plot), call_obv['obv_bb_lower'].tail(num_periods_to_plot), label='Call OBV Lower Band')
                 # self.ax[0].plot(call_obv['date'].tail(num_periods_to_plot), call_obv['obv_upper_band2'].tail(num_periods_to_plot), label='Call OBV Upper Band 2')
                 # self.ax[0].plot(call_obv['date'].tail(num_periods_to_plot), call_obv['obv_lower_band2'].tail(num_periods_to_plot), label='Call OBV Lower Band 2')
 
                 self.ax[0].plot(put_obv['date'].tail(num_periods_to_plot), put_obv['obv'].tail(num_periods_to_plot), label='Put OBV', color='red')
                 self.ax[0].plot(put_obv['date'].tail(num_periods_to_plot), put_obv['obv_ma'].tail(num_periods_to_plot), label='Put OBV MA')
-                self.ax[0].plot(put_obv['date'].tail(num_periods_to_plot), put_obv['obv_upper_band'].tail(num_periods_to_plot), label='Put OBV Upper Band')
-                self.ax[0].plot(put_obv['date'].tail(num_periods_to_plot), put_obv['obv_lower_band'].tail(num_periods_to_plot), label='Put OBV Lower Band')
+                self.ax[0].plot(put_obv['date'].tail(num_periods_to_plot), put_obv['obv_bb_upper'].tail(num_periods_to_plot), label='Put OBV Upper Band')
+                self.ax[0].plot(put_obv['date'].tail(num_periods_to_plot), put_obv['obv_bb_lower'].tail(num_periods_to_plot), label='Put OBV Lower Band')
                 # self.ax[0].plot(put_obv['date'].tail(num_periods_to_plot), put_obv['obv_upper_band2'].tail(num_periods_to_plot), label='Put OBV Upper Band 2')
                 # self.ax[0].plot(put_obv['date'].tail(num_periods_to_plot), put_obv['obv_lower_band2'].tail(num_periods_to_plot), label='Put OBV Lower Band 2')
                 
@@ -190,23 +164,7 @@ class OptionsAnalyzer:
 
                 self.fig.tight_layout()
 
-                # stope listening for market data 
-                for ticker in snickers:
-                    self.ib.cancelMktData(ticker.contract)
                 plt.draw()
-                        
-            def onPendingTickers(tickers):
-                """Process incoming market data"""
-                self.obv_data = []
-                for ticker in tickers:
-                    # print(ticker)
-                    # tkr = self.ib.reqMktData(ticker.contract)
-                    # request historical data at 1min interval 
-                    data = self.ib.reqHistoricalData(ticker.contract, endDateTime='', durationStr='2 D', barSizeSetting='1 min', whatToShow='TRADES', useRTH=True, formatDate=1)
-                    self.ib.sleep(0.5)
-                    data = util.df(data)
-                    data = self.obv.calculate(data, ma_type='SMA', ma_length=45, use_bb=True, bb_mult=1.0)
-                    self.obv_data.append((ticker, data))
             
             ani = FuncAnimation(self.fig, update_plot , interval=60000, cache_frame_data=False)  # Update every minute
             plt.show(block=True) 
