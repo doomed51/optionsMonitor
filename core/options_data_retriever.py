@@ -42,8 +42,11 @@ class OptionsDataRetriever:
             try:
                 # validate the contract
                 # con = self.ib.qualifyContracts(con)[0]
-                print(f"Requesting historical data for {con}")
-                print(f"Duration: {duration}, Bar Size: {bar_size}")
+                # con.lastTradeDateOrContractMonth = '20241122'
+                # con.strike = 595.0
+                print(f"Requesting historical data for {con.symbol}-{con.strike}-{con.right}-{con.lastTradeDateOrContractMonth} @ {duration} {bar_size}")
+                # print(f"Duration: {duration}, Bar Size: {bar_size}")
+                
                 bars = self.ib.reqHistoricalData(
                     con,
                     endDateTime='',
@@ -55,12 +58,15 @@ class OptionsDataRetriever:
                 )
                 if bars:
                     df = util.df(bars)
-                    print(df)
-                    exit()
-                    df['right'] = con.right  # Add option type (Call/Put)
+                    # print(df)
+                    # exit()
+                    df['right'] = con.right  # Add option type (C/P)
                     df['strike'] = con.strike
                     # dfs.append(df)
                     dfs[len(dfs)] = {'contract': con, 'df': df}
+                
+                # print(bars)
+                # exit()
             
             except Exception as e:
                 self.logger.warning(f"Failed to get historical data for {con.localSymbol}: {e}")
