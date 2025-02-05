@@ -95,12 +95,12 @@ class OptionsContractManager:
             
             # Create OTM option contracts
             otm_calls = [
-                Option(symbol, expiry, strike, 'C', 'SMART')
+                Option(symbol, expiry, strike, 'C', 'SMART', includeExpired=True)
                 for strike in strikes[atm_idx:atm_idx+num_strikes]
             ]
             
             otm_puts = [
-                Option(symbol, expiry, strike, 'P', 'SMART')
+                Option(symbol, expiry, strike, 'P', 'SMART', includeExpired=True)
                 for strike in strikes[atm_idx-num_strikes:atm_idx]
             ]
             
