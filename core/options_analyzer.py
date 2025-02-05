@@ -1,8 +1,8 @@
 import matplotlib.pyplot as plt
-import queue
 from matplotlib.animation import FuncAnimation
 from ib_insync import *
 import pandas as pd
+import numpy as np 
 from typing import List, Tuple, Dict
 from datetime import datetime
 from indicators.onBalanceVolume import OnBalanceVolume
@@ -23,12 +23,14 @@ class OptionsAnalyzer:
         # Set up real-time plot
         plt.style.use('dark_background')
         plt.ion()
-        self.fig, self.ax = plt.subplots(2, figsize=(11,7), sharex=True)
+        self.fig, self.ax = plt.subplots(2, figsize=(13.5,8), sharex=True)
         self.line, = self.ax[0].plot([], [], label='Aggregate OBV')
         self.ax[0].set_title('Real-Time Options Aggregate On-Balance Volume')
         self.ax[0].set_xlabel('Time')
         self.ax[0].set_ylabel('OBV')
         self.ax[0].legend()
+        self.ax0_twin = self.ax[0].twinx()
+        self.ax1_twin = self.ax[1].twinx()
         
     def connect(self, host='127.0.0.1', port=7496, clientId=10):
         """Connect to TWS/IBGateway"""
@@ -48,7 +50,8 @@ class OptionsAnalyzer:
                 barSizeSetting=bar_size,
                 whatToShow='TRADES',
                 useRTH=True,
-                formatDate=1
+                formatDate=1,
+
             )
             
             if bars:
@@ -88,13 +91,46 @@ class OptionsAnalyzer:
         self._prev_obv = obv
         return obv
 
+    def log_calculation_with_sign(self, series):
+        def safe_signed_log(x):
+            """
+                handles negative values in log calculations 
+            """
+            if x > 0:
+                return np.log(x + 1)
+            elif x < 0:
+                return -np.log(abs(x) + 1)
+            else:
+                return 0
+        
+        vector = np.vectorize(safe_signed_log)
+        current = vector(series) 
+        previous = vector(series.shift(1))
+        # return series.apply(safe_signed_log)
+        return current - previous 
+    
     def monitor_realtime(self, symbol: str, num_otm_strikes: int = 5, num_days_to_expiry: int = 1, num_periods_to_plot: int = 360):
             """Monitor options in realtime with live plotting"""
 
             def update_plot(frame):
+                def safe_signed_log2(x):
+                    """
+                        handles negative values in log calculations 
+                    """
+                    if x is not None and not np.isnan(x):
+                        if x > 0:
+                            return np.log(x + 1)
+                        elif x < 0:
+                            return -np.log(abs(x) + 1)
+                        else:
+                            return 0
+                    
                 """Update the plot for real-time animation."""
                 print('Updating plot...')
-
+                ma_type = 'SMA' 
+                ma_length = 45
+                bb_length = 45
+                bb_mult = 0.5
                 contract_manager = OptionsContractManager(self.ib)
                 data_retriever = OptionsDataRetriever(self.ib)
 
@@ -103,15 +139,33 @@ class OptionsAnalyzer:
                 all_contracts = otm_cons['calls'] + otm_cons['puts']
 
                 # get history for otm contracts 
-                contracts_and_hist_data = data_retriever.get_historical_data(all_contracts, duration='1 D')
+                contracts_and_hist_data = data_retriever.get_historical_data(all_contracts, duration='2 D')
 
                 # Aggregate obv for calls and puts 
                 call_obv, put_obv = self.obv.calculate_obv_across_contracts(contracts_and_hist_data, ma_type='SMA', ma_length=20, use_bb=True, bb_mult=0.5)
 
+                # add log pct change to call and put obv 
+                call_obv['obv_log_change'] = self.log_calculation_with_sign(call_obv['obv']) #np.log((call_obv['obv']**2) / (call_obv['obv'].shift(1)**2))
+                put_obv['obv_log_change'] = self.log_calculation_with_sign(put_obv['obv']) #np.log((put_obv['obv']**2) / (put_obv['obv'].shift(1)**2))
+                call_obv['obv_pct_change'] = call_obv['obv'].pct_change()
+                put_obv['obv_pct_change'] = put_obv['obv'].pct_change()
+
                 ## add ratio of callobv to putobv
                 call_obv['obv_call-put-ratio'] = call_obv['obv'] - put_obv['obv']
-                call_obv['obv_cp_ratio_ma'] = self.obv.calculate_ma(call_obv['obv_call-put-ratio'], ma_type='EMA', length=40)
-                call_obv['obv_cp_ratio_upper'], call_obv['obv_cp_ratio_lower']= self.obv.calculate_bollinger_bands(call_obv['obv_call-put-ratio'], call_obv['obv_cp_ratio_ma'], length=40, mult=0.5)
+                call_obv['obv_net-log-change'] = call_obv['obv_log_change'] - put_obv['obv_log_change']
+                # call_obv['obv_net-pct-change'] = call_obv['obv_pct_change'] - put_obv['obv_pct_change']
+                call_obv['obv_net-pct-change'] = abs(call_obv['obv_pct_change']) - abs(put_obv['obv_pct_change'])
+                vector = np.vectorize(safe_signed_log2)
+                call_obv['obv_net-pct-change'] = vector(call_obv['obv_net-pct-change'])
+                
+                call_obv['obv_net-pct-change-cumsum20'] = call_obv['obv_net-pct-change'].rolling(window=20).sum()
+                call_obv['obv_net-pct-change-cumsum10'] = call_obv['obv_net-pct-change'].rolling(window=10).sum()
+                call_obv['obv_net-pct-change-cumsum5'] = call_obv['obv_net-pct-change'].rolling(window=5).sum()
+
+
+                call_obv['obv_cp_ratio_ma'] = self.obv.calculate_ma(call_obv['obv_call-put-ratio'], ma_type=ma_type, length=ma_length )
+                call_obv['obv_cp_ratio_upper'], call_obv['obv_cp_ratio_lower']= self.obv.calculate_bollinger_bands(call_obv['obv_call-put-ratio'], call_obv['obv_cp_ratio_ma'], length=bb_length, mult=bb_mult)
+                call_obv['obv_cp_ratio_upper1'], call_obv['obv_cp_ratio_lower1']= self.obv.calculate_bollinger_bands(call_obv['obv_call-put-ratio'], call_obv['obv_cp_ratio_ma'], length=bb_length, mult=bb_mult*2)
 
                 # convert date column to string for better plots 
                 call_obv['date'] = call_obv['date'].dt.strftime('%Y-%m-%d %H:%M:%S')
@@ -154,7 +208,20 @@ class OptionsAnalyzer:
                 self.ax[1].plot(call_obv['date'].tail(num_periods_to_plot), call_obv['obv_call-put-ratio'].tail(num_periods_to_plot), label='Call OBV / Put OBV', color='blue')
                 self.ax[1].plot(call_obv['date'].tail(num_periods_to_plot), call_obv['obv_cp_ratio_upper'].tail(num_periods_to_plot), label='Call OBV / Put OBV Upper Band', color='yellow', linestyle='--')
                 self.ax[1].plot(call_obv['date'].tail(num_periods_to_plot), call_obv['obv_cp_ratio_lower'].tail(num_periods_to_plot), label='Call OBV / Put OBV Lower Band', color='yellow', linestyle='--')
+                self.ax[1].plot(call_obv['date'].tail(num_periods_to_plot), call_obv['obv_cp_ratio_upper1'].tail(num_periods_to_plot), label='Call OBV / Put OBV Upper Band', color='yellow', linestyle='--', alpha=0.5)
+                self.ax[1].plot(call_obv['date'].tail(num_periods_to_plot), call_obv['obv_cp_ratio_lower1'].tail(num_periods_to_plot), label='Call OBV / Put OBV Lower Band', color='yellow', linestyle='--', alpha=0.5)
 
+                # barplot of obv_net-log-change on secondatry y-axis
+                
+                self.ax0_twin.clear() 
+                self.ax0_twin.bar(call_obv['date'].tail(num_periods_to_plot), call_obv['obv_net-pct-change'].tail(num_periods_to_plot), label='OBV Net Log Change', color='purple', alpha=0.5)
+
+                self.ax1_twin.clear() 
+                self.ax1_twin.plot(call_obv['date'].tail(num_periods_to_plot), call_obv['obv_net-pct-change-cumsum20'].tail(num_periods_to_plot), label='OBV Net Log Change', color='purple', alpha=0.3)
+                self.ax1_twin.plot(call_obv['date'].tail(num_periods_to_plot), call_obv['obv_net-pct-change-cumsum10'].tail(num_periods_to_plot), label='OBV Net Log Change', color='purple', alpha=0.4)
+                self.ax1_twin.plot(call_obv['date'].tail(num_periods_to_plot), call_obv['obv_net-pct-change-cumsum5'].tail(num_periods_to_plot), label='OBV Net Log Change', color='purple', alpha=0.5)
+                # hline at 0
+                self.ax1_twin.axhline(y=0, color='purple', linestyle='-', alpha=0.3)
                 # self.ax[2].clear()
                 # ax1_twin.clear()
 
@@ -170,10 +237,10 @@ class OptionsAnalyzer:
             plt.show(block=True) 
 
 # Example usage:
-def main(symbol):
+def main(symbol, num_periods_to_plot = 120):
     analyzer = OptionsAnalyzer()
     analyzer.connect()
-    analyzer.monitor_realtime(symbol, num_periods_to_plot=160)
+    analyzer.monitor_realtime(symbol, num_periods_to_plot=num_periods_to_plot, num_days_to_expiry=1)
     # For historical analysis
     # symbol = 'AAPL'
     # options = analyzer.get_otm_options(symbol)
