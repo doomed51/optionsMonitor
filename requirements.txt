@@ -1,3 +1,4 @@
 ﻿pandas
 ib_insync
 matplotlib
+duckdb 
